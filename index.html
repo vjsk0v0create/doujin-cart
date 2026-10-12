@@ -1,0 +1,2082 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>同人イベント共同買い物シート＆リアルタイム精算ツール</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- PeerJS (WebRTC P2P通信ライブラリ: アカウント不要で即座に端末同士をリアルタイム接続) -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- フォント -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    body {
+      font-family: 'Noto Sans JP', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .font-mono-num {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .sheet-table {
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .sheet-table th, .sheet-table td {
+      border-right: 1px solid #e2e8f0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .sheet-table tr:hover td {
+      background-color: #f8fafc;
+    }
+    .cell-input {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      padding: 4px 6px;
+      font-size: 12px;
+      outline: none;
+      transition: all 0.1s ease;
+      border-radius: 2px;
+    }
+    .cell-input:focus {
+      background: #ffffff;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    }
+    .cell-select {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      padding: 2px 4px;
+      font-size: 11px;
+      outline: none;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .cell-select:focus {
+      background: #ffffff;
+      border-color: #6366f1;
+    }
+    .sticky-col-1 {
+      position: sticky;
+      left: 0;
+      z-index: 10;
+      background-color: #ffffff;
+    }
+    .sticky-col-2 {
+      position: sticky;
+      left: 36px;
+      z-index: 10;
+      background-color: #ffffff;
+    }
+    th.sticky-col-1, th.sticky-col-2 {
+      background-color: #f1f5f9;
+      z-index: 20;
+    }
+    .sticky-col-2::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 4px;
+      pointer-events: none;
+      box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.1);
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen flex flex-col">
+
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-40 select-none shadow-xs">
+    <!-- 最上部: イベント切り替え ＆ 新規作成バー -->
+    <div class="px-4 py-1.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex items-center gap-2">
+        <span class="text-amber-400 font-bold">🎪 イベント:</span>
+        <select id="event-selector" onchange="switchEvent(this.value)" class="bg-slate-800 text-white border border-slate-700 rounded px-2 py-0.5 font-bold outline-none cursor-pointer hover:bg-slate-700">
+          <!-- JSで動的生成 -->
+        </select>
+        <button onclick="openNewEventModal()" class="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-bold transition flex items-center gap-1 shadow-2xs">
+          <span>＋</span> <span>新規イベント作成</span>
+        </button>
+        <button onclick="duplicateCurrentEvent()" class="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition hidden sm:inline" title="現在の設定・品物を複製して新しいイベントを作成">
+          📋 複製
+        </button>
+      </div>
+
+      <div class="flex items-center gap-2 text-[11px] text-slate-300">
+        <span id="current-event-count-badge">保存中イベント: 1件</span>
+        <button onclick="deleteCurrentEvent()" class="text-slate-400 hover:text-rose-400 transition" title="このイベントを削除">
+          🗑 削除
+        </button>
+      </div>
+    </div>
+
+    <!-- メイン操作バー -->
+    <div class="px-4 py-2 flex flex-wrap items-center justify-between gap-3">
+      <!-- アプリロゴ & タブ切り替え -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 bg-indigo-600 rounded flex items-center justify-center text-white font-black text-sm shadow-sm">
+            ▤
+          </div>
+          <span class="font-bold text-sm tracking-tight text-slate-800 hidden sm:inline" id="header-app-title">同人共同買い物シート</span>
+        </div>
+
+        <nav class="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-semibold">
+          <button id="nav-btn-sheet" onclick="switchView('sheet')" class="px-3 py-1 rounded-md bg-white text-indigo-600 shadow-xs transition">
+            📋 シート編集
+          </button>
+          <button id="nav-btn-circle" onclick="switchView('circle')" class="px-3 py-1 rounded-md text-slate-600 hover:text-indigo-600 transition flex items-center gap-1">
+            <span>🎪 サークル別合計</span>
+          </button>
+          <button id="nav-btn-settle" onclick="switchView('settle')" class="px-3 py-1 rounded-md text-slate-600 hover:text-indigo-600 transition flex items-center gap-1">
+            <span>💰 精算・差額</span>
+            <span id="settle-badge-count" class="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.2 rounded-full font-bold">0</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- リアルタイムP2P通信ステータス & メンバー & 共有メニュー -->
+      <div class="flex items-center gap-2">
+        <!-- P2P通信状態バッジ -->
+        <button id="btn-sync-status" onclick="openShareModal()" class="px-2.5 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-xs font-bold flex items-center gap-1.5 transition hover:bg-emerald-100" title="クリックして共有リンクを確認">
+          <span class="relative flex h-2 w-2">
+            <span id="sync-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span id="sync-dot-badge" class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <span id="sync-status-text">リアルタイム同期中</span>
+        </button>
+
+        <button onclick="openMembersModal()" class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium flex items-center gap-1 transition shadow-2xs">
+          <span>👥</span> <span class="hidden sm:inline">メンバー</span> (<span id="member-count-badge">3</span>)
+        </button>
+        
+        <button onclick="openShareModal()" class="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-xs font-bold flex items-center gap-1 transition shadow-xs">
+          <span>🔗</span> <span class="hidden sm:inline">友達に</span>共有リンクを送る
+        </button>
+
+        <!-- CSVメニュー: クリックで確実に開閉する方式 -->
+        <div class="relative">
+          <button id="btn-csv-toggle" onclick="toggleCsvMenu(event)" class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium flex items-center gap-1 transition active:scale-95">
+            <span>💾 CSV</span> ▾
+          </button>
+          <div id="csv-dropdown-menu" class="hidden absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-xl py-1 z-50 text-xs">
+            <button onclick="downloadCSVTemplate(event)" class="w-full text-left px-3 py-2.5 hover:bg-indigo-50 flex items-center gap-2 text-indigo-600 font-bold">
+              📄 CSV雛形をダウンロード
+            </button>
+            <button onclick="triggerExportCSV(event)" class="w-full text-left px-3 py-2.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700">
+              📥 現在のデータをCSV保存
+            </button>
+            <label class="w-full text-left px-3 py-2.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer">
+              <span>📤 CSVをインポート</span>
+              <input type="file" accept=".csv" onchange="importCSV(event)" class="hidden">
+            </label>
+            <div class="border-t border-slate-100 my-1"></div>
+            <button onclick="resetDataPrompt(event)" class="w-full text-left px-3 py-2.5 text-rose-600 hover:bg-rose-50 flex items-center gap-2">
+              🗑 このイベントの品物を空にする
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ツールバー: 行追加・一括操作・検索フィルタ -->
+    <div id="sheet-toolbar" class="px-4 py-2 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex items-center gap-2 flex-wrap">
+        <button onclick="addNewRow()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded shadow-xs flex items-center gap-1 transition active:scale-95">
+          <span>＋</span> 1行追加
+        </button>
+        <button onclick="addNewRow(5)" class="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded font-medium transition shadow-2xs">
+          ＋5行
+        </button>
+        <div class="h-4 w-px bg-slate-300 mx-1"></div>
+        <button id="btn-batch-delete" onclick="deleteSelectedRows()" class="px-2.5 py-1.5 bg-white text-rose-600 border border-slate-200 hover:bg-rose-50 rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition" disabled>
+          🗑 選択削除 (<span id="selected-count">0</span>)
+        </button>
+        <button id="btn-batch-done" onclick="markSelectedDone()" class="px-2.5 py-1.5 bg-white text-emerald-600 border border-slate-200 hover:bg-emerald-50 rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition" disabled>
+          ✓ 選択行を確保済みに
+        </button>
+      </div>
+
+      <div class="flex items-center gap-2 flex-wrap">
+        <input type="text" id="search-input" oninput="handleSearch(this.value)" placeholder="🔍 検索 (配置/サークル/品名)..." class="w-40 sm:w-56 bg-white border border-slate-200 rounded px-2.5 py-1 text-xs outline-none focus:border-indigo-500">
+        <select id="filter-status" onchange="renderSheet()" class="bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-slate-700 font-medium">
+          <option value="ALL">全ステータス</option>
+          <option value="pending">⏳ 未購入</option>
+          <option value="done">✅ 確保済</option>
+          <option value="soldout">❌ 完売</option>
+          <option value="skip">⏭ 見送り</option>
+        </select>
+        <select id="filter-buyer" onchange="renderSheet()" class="bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-slate-700 font-medium">
+          <option value="ALL">全買い手</option>
+          <option value="__NONE__">⚠️ 未定 (未購入)</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <!-- トースト通知 -->
+  <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-4 py-2 rounded-full text-xs font-medium shadow-xl opacity-0 transition-opacity duration-300 pointer-events-none flex items-center gap-2">
+    <span id="toast-icon">✓</span>
+    <span id="toast-msg">通知</span>
+  </div>
+
+  <main class="flex-1 flex flex-col overflow-hidden relative">
+
+    <!-- ビュー 1: スプレッドシート グリッド表示 -->
+    <div id="view-sheet" class="flex-1 flex flex-col h-full overflow-hidden">
+      <!-- 統計サマリーリボン -->
+      <div class="bg-white px-4 py-1.5 border-b border-slate-200 text-xs flex flex-wrap items-center justify-between gap-4 text-slate-600">
+        <div class="flex items-center gap-4">
+          <span>アイテム数: <strong id="stat-row-count" class="text-slate-800">0</strong> 件</span>
+          <span class="text-emerald-600 font-medium">確保済: <strong id="stat-done-count">0</strong> 件</span>
+          <span class="text-rose-600 font-medium">完売: <strong id="stat-soldout-count">0</strong> 件</span>
+        </div>
+        <div class="flex items-center gap-4">
+          <span>予定総点数: <strong id="stat-items-count" class="font-mono-num text-slate-800 font-bold">0</strong> 点</span>
+          <span>予定総額: <strong id="stat-budget-total" class="font-mono-num text-slate-700">¥0</strong></span>
+          <span>確保済総額: <strong id="stat-actual-total" class="font-mono-num text-indigo-600 text-sm font-bold">¥0</strong></span>
+        </div>
+      </div>
+
+      <!-- テーブル本体 (スクロール領域) -->
+      <div class="flex-1 overflow-auto bg-slate-200" id="table-scroll-container">
+        <table class="sheet-table w-full bg-white text-xs select-text">
+          <thead class="bg-slate-100 text-slate-700 sticky top-0 z-20 font-bold border-b border-slate-300">
+            <tr>
+              <th class="w-9 p-2 text-center sticky-col-1">
+                <input type="checkbox" id="check-all" onchange="toggleSelectAll(this.checked)" class="rounded text-indigo-600 cursor-pointer">
+              </th>
+              <th class="w-9 p-2 text-center sticky-col-2 text-slate-500 font-normal">#</th>
+              <th class="w-14 p-2 text-center">画像</th>
+              <th class="w-24 p-2 text-left cursor-pointer hover:bg-slate-200" onclick="sortBy('space')">
+                配置 <span class="text-[10px] text-slate-400" id="sort-space">↕</span>
+              </th>
+              <th class="w-32 p-2 text-left cursor-pointer hover:bg-slate-200" onclick="sortBy('circle')">
+                サークル名 <span class="text-[10px] text-slate-400" id="sort-circle">↕</span>
+              </th>
+              <th class="w-44 p-2 text-left">品名 / 作品</th>
+              <th class="w-20 p-2 text-right">単価 (円)</th>
+              <th class="min-w-44 p-2 text-left bg-indigo-50/50">
+                ほしい人 (チェックで個数自動連動)
+              </th>
+              <th class="w-14 p-2 text-center cursor-pointer hover:bg-slate-200" onclick="sortBy('count')">
+                個数 <span class="text-[10px] text-slate-400" id="sort-count">↕</span>
+              </th>
+              <th class="w-20 p-2 text-right cursor-pointer hover:bg-slate-200" onclick="sortBy('subtotal')">
+                小計 <span class="text-[10px] text-slate-400" id="sort-subtotal">↕</span>
+              </th>
+              <th class="min-w-36 p-2 text-left bg-emerald-50/40">
+                買い手 (タップで確保済に自動更新)
+              </th>
+              <th class="w-24 p-2 text-center cursor-pointer hover:bg-slate-200" onclick="sortBy('status')">
+                状態 <span class="text-[10px] text-slate-400" id="sort-status">↕</span>
+              </th>
+              <th class="w-16 p-2 text-center cursor-pointer hover:bg-slate-200" onclick="sortBy('priority')">
+                優先度 <span class="text-[10px] text-slate-400" id="sort-priority">↕</span>
+              </th>
+              <th class="min-w-32 p-2 text-left">メモ</th>
+              <th class="w-10 p-2 text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody id="sheet-tbody">
+            <!-- JSで動的レンダリング -->
+          </tbody>
+        </table>
+      </div>
+      
+      <!-- ステータスバー -->
+      <div class="bg-white border-t border-slate-200 px-4 py-1.5 text-[11px] text-slate-500 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+          <span>💡 ほしい人のチェック数＝個数＆小計に直結 / 買った人は買い手ボタンをワンタップ！</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="sync-bottom-label">リアルタイム同期稼働中</span>
+          <span id="sync-dot-bottom" class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ビュー 2: サークル別集計表示 -->
+    <div id="view-circle" class="flex-1 overflow-auto p-4 max-w-4xl mx-auto w-full space-y-4 hidden">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-slate-800">🎪 サークル別 合計金額レポート</h2>
+          <p class="text-xs text-slate-500">配置・サークルごとに、ほしい人の合計数に応じた支払い予定額と確保済額を表示します。</p>
+        </div>
+        <button onclick="renderCircleSummary()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold">
+          🔄 再計算
+        </button>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        <table class="w-full text-xs text-left">
+          <thead class="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+            <tr>
+              <th class="p-3">配置</th>
+              <th class="p-3">サークル名</th>
+              <th class="p-3 text-center">総点数</th>
+              <th class="p-3 text-right">予定合計金額</th>
+              <th class="p-3 text-right">確保済 (支払済)</th>
+              <th class="p-3 text-center">状態内訳</th>
+            </tr>
+          </thead>
+          <tbody id="circle-summary-tbody" class="divide-y divide-slate-100">
+            <!-- JSで動的生成 -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ビュー 3: 精算・収支ダッシュボード -->
+    <div id="view-settle" class="flex-1 overflow-auto p-4 max-w-4xl mx-auto w-full space-y-4 hidden">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="bg-gradient-to-br from-indigo-600 to-indigo-800 text-white p-4 rounded-xl shadow-sm">
+          <div class="text-xs font-semibold text-indigo-200">確保済 確定購入総額</div>
+          <div class="text-2xl font-black font-mono-num mt-1" id="dash-total-paid">¥0</div>
+          <div class="text-[11px] text-indigo-100 mt-2 flex justify-between">
+            <span>対象アイテム数</span>
+            <strong id="dash-done-items-count">0 件</strong>
+          </div>
+        </div>
+
+        <div class="bg-white border border-slate-200 p-4 rounded-xl shadow-xs">
+          <div class="text-xs font-bold text-slate-500">移動が必要な精算残高</div>
+          <div class="text-2xl font-black font-mono-num mt-1 text-slate-800" id="dash-pending-settle">¥0</div>
+          <div class="text-[11px] text-slate-500 mt-2 flex justify-between">
+            <span>最小送金回数</span>
+            <strong id="dash-transfer-count" class="text-indigo-600 font-bold">0 回</strong>
+          </div>
+        </div>
+
+        <div class="bg-white border border-slate-200 p-4 rounded-xl shadow-xs flex flex-col justify-between">
+          <div>
+            <div class="text-xs font-bold text-slate-500">LINE / チャット共有</div>
+            <p class="text-[11px] text-slate-400 mt-1">割り勘・送金指示メッセージを生成</p>
+          </div>
+          <button onclick="copySettlementMessage()" class="w-full mt-2 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-lg border border-indigo-200 flex items-center justify-center gap-1.5 transition active:scale-98">
+            📋 精算メッセージをコピー
+          </button>
+        </div>
+      </div>
+
+      <!-- 送金指示 (最適相殺ルート) -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-4 space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+          <h2 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+            <span class="text-base text-indigo-600">⇄</span> 最短送金ルート（PayPay・現金手渡し）
+          </h2>
+          <span class="text-[11px] text-slate-400">各自がチェックした希望品の分だけ実負担となり、立替額と相殺されます</span>
+        </div>
+        <div id="transfer-routes-container" class="space-y-2"></div>
+      </div>
+
+      <!-- 各自の収支バランス一覧表 -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-4 space-y-3">
+        <h2 class="text-sm font-bold text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
+          <span>📊</span> メンバー別 収支明細
+        </h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs text-left">
+            <thead class="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+              <tr>
+                <th class="p-2.5">メンバー</th>
+                <th class="p-2.5 text-right">立替支払済 (A)</th>
+                <th class="p-2.5 text-right">実負担額 (B)</th>
+                <th class="p-2.5 text-right">差額 (A - B)</th>
+                <th class="p-2.5 text-center">ステータス</th>
+              </tr>
+            </thead>
+            <tbody id="settle-balance-tbody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 画像プレビューモーダル -->
+  <div id="modal-image-preview" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs hidden items-center justify-center p-4" onclick="closeImagePreview()">
+    <div class="max-w-xl max-h-[85vh] bg-white rounded-xl p-2 relative shadow-2xl flex flex-col items-center" onclick="event.stopPropagation()">
+      <div class="w-full flex justify-between items-center px-2 py-1 border-b border-slate-100 mb-2">
+        <span id="image-modal-title" class="text-xs font-bold text-slate-700 truncate">品物画像</span>
+        <button onclick="closeImagePreview()" class="text-slate-400 hover:text-slate-700 text-sm font-bold">✕</button>
+      </div>
+      <img id="image-modal-img" src="" alt="拡大画像" class="max-h-[70vh] w-auto object-contain rounded">
+      <div class="mt-2 flex gap-2 w-full justify-end">
+        <button id="btn-remove-image" class="text-rose-500 hover:text-rose-700 text-xs font-bold px-3 py-1">画像を削除</button>
+        <button onclick="closeImagePreview()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-3 py-1 rounded">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- メンバー管理モーダル -->
+  <div id="modal-members" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs hidden items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-sm w-full p-4 space-y-3 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+          <span>👥</span> 参加メンバー設定
+        </h3>
+        <button onclick="closeMembersModal()" class="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+      </div>
+      <p class="text-xs text-slate-500">
+        メンバーを追加すると、シートの「ほしい人」および「買い手」のボタンが**全行に自動追加**され即座に使えるようになります。
+      </p>
+
+      <form onsubmit="handleAddMember(event)" class="flex gap-2">
+        <input type="text" id="input-member-name" placeholder="名前 (例: 友人C)" required class="flex-1 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-indigo-500">
+        <button type="submit" class="px-3.5 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 transition">追加</button>
+      </form>
+
+      <div id="members-list-items" class="space-y-1.5 max-h-48 overflow-y-auto pr-1"></div>
+
+      <div class="pt-2 border-t border-slate-100 flex justify-end">
+        <button onclick="closeMembersModal()" class="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新規イベント作成モーダル -->
+  <div id="modal-new-event" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs hidden items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-sm w-full p-4 space-y-3 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+          <span>🎪</span> 新規イベントリストを作成
+        </h3>
+        <button onclick="closeNewEventModal()" class="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+      </div>
+      <p class="text-xs text-slate-500">
+        イベント名（例: 2026夏コミ、コミティア150など）を入力して新しい買い物リストをまっさらな状態で作成します。
+      </p>
+
+      <form onsubmit="handleCreateEvent(event)" class="space-y-3">
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">イベント名</label>
+          <input type="text" id="input-event-name" placeholder="例: 2026冬コミ C105" required class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-indigo-500">
+        </div>
+        <div class="flex items-center gap-2 text-xs text-slate-600">
+          <input type="checkbox" id="check-copy-members" checked class="rounded text-indigo-600">
+          <label for="check-copy-members" class="cursor-pointer select-none">現在の参加メンバーを引き継ぐ</label>
+        </div>
+        <div class="pt-2 flex justify-end gap-2">
+          <button type="button" onclick="closeNewEventModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition">キャンセル</button>
+          <button type="submit" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition shadow-xs">作成する</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 共有リンク・P2P接続モーダル -->
+  <div id="modal-share" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs hidden items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-md w-full p-4 space-y-3 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+          <span>🔗</span> 友達に共有リンクを送る
+        </h3>
+        <button onclick="closeShareModal()" class="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+      </div>
+      
+      <div class="bg-emerald-50 border border-emerald-200 p-2.5 rounded-lg text-xs text-emerald-800 space-y-1">
+        <div class="font-bold flex items-center gap-1">
+          <span>✨</span> アカウント不要で即座にリアルタイム同期！
+        </div>
+        <p class="text-[11px] text-emerald-700">
+          このリンクをLINEやDiscordで友達に送るだけで、友達のスマホとあなたの画面が直接通信(P2P)で繋がり、誰かが入力やチェックをするたびに全員の画面が同期されます。
+        </p>
+      </div>
+
+      <div class="space-y-1">
+        <label class="text-[11px] font-bold text-slate-600">共有URL</label>
+        <div class="bg-slate-50 border border-slate-200 p-2.5 rounded-lg break-all text-[11px] text-slate-600 max-h-24 overflow-y-auto font-mono" id="share-url-box"></div>
+      </div>
+
+      <div class="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+        <span>ルームID: <strong id="modal-room-id" class="font-mono text-indigo-600">--</strong></span>
+        <span>接続ピア数: <strong id="modal-peer-count" class="text-emerald-600 font-bold">0 台</strong></span>
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button onclick="copyShareLink()" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center justify-center gap-1">
+          <span>📋</span> 共有URLをコピー
+        </button>
+        <button onclick="closeShareModal()" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="cell-file-input" accept="image/*" class="hidden">
+
+  <script>
+    const MASTER_STORAGE_KEY = 'doujin_app_events_master_v1';
+    const CURRENT_EVENT_KEY = 'doujin_app_current_event_id';
+
+    // 複数イベントのマスターデータ管理構造
+    window.appData = {
+      currentEventId: '',
+      events: {} // { [eventId]: { id, title, roomId, members, items, lastLocalUpdate } }
+    };
+
+    window.state = {
+      currentEventId: '',
+      roomId: '',
+      isHost: false,
+      members: ['自分', '友人A', '友人B'],
+      items: [],
+      selectedIds: new Set(),
+      searchQuery: '',
+      sortKey: '',
+      sortAsc: true,
+      currentView: 'sheet',
+      lastLocalUpdate: Date.now()
+    };
+
+    let peer = null;
+    let connections = [];
+    let connectedPeersCount = 0;
+
+    // CSVメニュードロップダウンの開閉制御
+    function toggleCsvMenu(e) {
+      if (e) e.stopPropagation();
+      const menu = document.getElementById('csv-dropdown-menu');
+      if (menu) menu.classList.toggle('hidden');
+    }
+
+    window.addEventListener('click', (e) => {
+      const menu = document.getElementById('csv-dropdown-menu');
+      const btn = document.getElementById('btn-csv-toggle');
+      if (menu && !menu.classList.contains('hidden')) {
+        if (!menu.contains(e.target) && e.target !== btn) {
+          menu.classList.add('hidden');
+        }
+      }
+    });
+
+    function triggerExportCSV(e) {
+      if (e) e.stopPropagation();
+      const menu = document.getElementById('csv-dropdown-menu');
+      if (menu) menu.classList.add('hidden');
+      exportCSV();
+    }
+
+    function initApp() {
+      // 1. ローカルストレージから全イベントデータを読み込み
+      const rawMaster = localStorage.getItem(MASTER_STORAGE_KEY);
+      if (rawMaster) {
+        try {
+          window.appData = JSON.parse(rawMaster);
+        } catch(e) {
+          console.error(e);
+        }
+      }
+
+      // イベントが1件も存在しない場合は初期イベントを生成
+      if (!window.appData.events || Object.keys(window.appData.events).length === 0) {
+        const defaultId = 'evt_' + Math.random().toString(36).substring(2, 9);
+        window.appData = {
+          currentEventId: defaultId,
+          events: {
+            [defaultId]: {
+              id: defaultId,
+              title: '同人イベント買い物リスト (メイン)',
+              roomId: 'room_' + Math.random().toString(36).substring(2, 9),
+              members: ['自分', '友人A', '友人B'],
+              items: [
+                {
+                  id: 'item_1',
+                  space: '東4 A01a',
+                  circle: '極光スタジオ',
+                  title: '新刊イラスト集+グッズセット',
+                  price: 1500,
+                  wanted: ['自分', '友人A'],
+                  buyer: '',
+                  status: 'pending',
+                  priority: 'high',
+                  memo: '限数1・ポスター先着',
+                  image: ''
+                },
+                {
+                  id: 'item_2',
+                  space: '東4 A02b',
+                  circle: '星屑書房',
+                  title: '既刊合同誌 Vol.2',
+                  price: 1000,
+                  wanted: ['自分', '友人A', '友人B'],
+                  buyer: '自分',
+                  status: 'done',
+                  priority: 'mid',
+                  memo: '既刊もあれば確保',
+                  image: ''
+                }
+              ],
+              lastLocalUpdate: Date.now()
+            }
+          }
+        };
+        saveMasterStorage();
+      }
+
+      // URLに room パラメータがあるかチェック
+      const urlParams = new URLSearchParams(window.location.search);
+      let roomFromUrl = urlParams.get('room');
+      const hash = window.location.hash;
+      if (!roomFromUrl && hash.includes('room=')) {
+        const match = hash.match(/room=([a-zA-Z0-9_\-]+)/);
+        if (match) roomFromUrl = match[1];
+      }
+
+      // URLにroom指定がある場合、該当するイベントを探すか一時ロード
+      if (roomFromUrl) {
+        let matchedEvt = Object.values(window.appData.events).find(ev => ev.roomId === roomFromUrl);
+        if (!matchedEvt) {
+          // 他人の共有リンクを初めて開いた場合、新規イベントとして自動登録
+          const newEvtId = 'shared_' + roomFromUrl;
+          matchedEvt = {
+            id: newEvtId,
+            title: `共有イベント (${roomFromUrl.substring(0, 6)})`,
+            roomId: roomFromUrl,
+            members: ['自分', '友人A', '友人B'],
+            items: [],
+            lastLocalUpdate: Date.now()
+          };
+          window.appData.events[newEvtId] = matchedEvt;
+        }
+        window.appData.currentEventId = matchedEvt.id;
+      }
+
+      const activeEventId = window.appData.currentEventId || Object.keys(window.appData.events)[0];
+      loadEventIntoState(activeEventId);
+      renderEventSelector();
+
+      updateMemberBadges();
+      renderSheet();
+      renderCircleSummary();
+      renderSettlementDashboard();
+      initP2PSync();
+
+      window.addEventListener('paste', handleGlobalPaste);
+    }
+
+    window.addEventListener('DOMContentLoaded', initApp);
+
+    function loadEventIntoState(eventId) {
+      const evt = window.appData.events[eventId];
+      if (!evt) return;
+
+      window.appData.currentEventId = eventId;
+      window.state.currentEventId = eventId;
+      window.state.roomId = evt.roomId;
+      window.state.members = Array.isArray(evt.members) ? evt.members : ['自分', '友人A', '友人B'];
+      window.state.items = Array.isArray(evt.items) ? evt.items : [];
+      window.state.lastLocalUpdate = evt.lastLocalUpdate || Date.now();
+      window.state.selectedIds.clear();
+
+      document.getElementById('header-app-title').textContent = evt.title || '同人共同買い物シート';
+    }
+
+    function saveMasterStorage() {
+      try {
+        localStorage.setItem(MASTER_STORAGE_KEY, JSON.stringify(window.appData));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function saveStorage(broadcast = true) {
+      window.state.lastLocalUpdate = Date.now();
+      
+      // 現在のイベントデータを保存
+      if (window.appData.events[window.state.currentEventId]) {
+        const cur = window.appData.events[window.state.currentEventId];
+        cur.members = window.state.members;
+        cur.items = window.state.items;
+        cur.lastLocalUpdate = window.state.lastLocalUpdate;
+      }
+      saveMasterStorage();
+
+      if (broadcast) {
+        broadcastSyncData();
+      }
+    }
+
+    function renderEventSelector() {
+      const sel = document.getElementById('event-selector');
+      if (!sel) return;
+
+      sel.innerHTML = Object.values(window.appData.events).map(ev => `
+        <option value="${ev.id}" ${ev.id === window.state.currentEventId ? 'selected' : ''}>
+          ${escapeHtml(ev.title)} (${ev.items ? ev.items.length : 0}件)
+        </option>
+      `).join('');
+
+      document.getElementById('current-event-count-badge').textContent = `保存中イベント: ${Object.keys(window.appData.events).length}件`;
+    }
+
+    function switchEvent(eventId) {
+      if (!window.appData.events[eventId]) return;
+      loadEventIntoState(eventId);
+      renderEventSelector();
+      updateMemberBadges();
+      renderSheet();
+      renderCircleSummary();
+      renderSettlementDashboard();
+
+      // P2P通信を新しいルームIDで再接続
+      if (peer) {
+        try { peer.destroy(); } catch(e){}
+        peer = null;
+      }
+      initP2PSync();
+      showToast(`「${window.appData.events[eventId].title}」に切り替えました`);
+    }
+
+    function openNewEventModal() {
+      document.getElementById('input-event-name').value = '';
+      document.getElementById('modal-new-event').classList.remove('hidden');
+      document.getElementById('modal-new-event').classList.add('flex');
+    }
+
+    function closeNewEventModal() {
+      document.getElementById('modal-new-event').classList.add('hidden');
+      document.getElementById('modal-new-event').classList.remove('flex');
+    }
+
+    function handleCreateEvent(e) {
+      e.preventDefault();
+      const title = document.getElementById('input-event-name').value.trim();
+      if (!title) return;
+
+      const copyMembers = document.getElementById('check-copy-members').checked;
+      const newId = 'evt_' + Math.random().toString(36).substring(2, 9);
+      const newRoom = 'room_' + Math.random().toString(36).substring(2, 9);
+
+      window.appData.events[newId] = {
+        id: newId,
+        title: title,
+        roomId: newRoom,
+        members: copyMembers ? [...window.state.members] : ['自分', '友人A', '友人B'],
+        items: [],
+        lastLocalUpdate: Date.now()
+      };
+
+      saveMasterStorage();
+      closeNewEventModal();
+      switchEvent(newId);
+      showToast(`新しいイベント「${title}」を作成しました！🎉`);
+    }
+
+    function duplicateCurrentEvent() {
+      const cur = window.appData.events[window.state.currentEventId];
+      if (!cur) return;
+
+      const newId = 'evt_' + Math.random().toString(36).substring(2, 9);
+      const newRoom = 'room_' + Math.random().toString(36).substring(2, 9);
+      const newTitle = `${cur.title} (コピー)`;
+
+      // アイテムをクローン（IDを新規採番し、状態を未購入にリセット）
+      const clonedItems = cur.items.map(it => ({
+        ...it,
+        id: 'item_' + Math.random().toString(36).substring(2, 9),
+        buyer: '',
+        status: 'pending'
+      }));
+
+      window.appData.events[newId] = {
+        id: newId,
+        title: newTitle,
+        roomId: newRoom,
+        members: [...cur.members],
+        items: clonedItems,
+        lastLocalUpdate: Date.now()
+      };
+
+      saveMasterStorage();
+      switchEvent(newId);
+      showToast(`「${newTitle}」として複製しました！`);
+    }
+
+    function deleteCurrentEvent() {
+      const eventIds = Object.keys(window.appData.events);
+      if (eventIds.length <= 1) {
+        showToast('最後の1つのイベントは削除できません', '⚠️');
+        return;
+      }
+
+      const curTitle = window.appData.events[window.state.currentEventId]?.title || '';
+      if (!confirm(`本当に「${curTitle}」を削除しますか？`)) return;
+
+      delete window.appData.events[window.state.currentEventId];
+      const remainingIds = Object.keys(window.appData.events);
+      saveMasterStorage();
+      switchEvent(remainingIds[0]);
+      showToast(`イベントを削除しました`);
+    }
+
+    function initP2PSync() {
+      // PeerJSライブラリが利用可能かチェック
+      if (typeof Peer === 'undefined') {
+        console.warn('PeerJS library is not available in current environment. Running in offline/local mode.');
+        updateSyncStatusUI('offline', 'ローカル動作中 (P2P未対応環境)');
+        return;
+      }
+
+      const cleanRoomId = (window.state.roomId || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
+      const hostPeerId = `djcart-${cleanRoomId}-host`;
+      updateSyncStatusUI('connecting', '同期接続中...');
+
+      try {
+        peer = new Peer(hostPeerId, {
+          debug: 0
+        });
+      } catch (e) {
+        console.warn('Failed to construct Peer:', e);
+        peer = null;
+        updateSyncStatusUI('offline', 'ローカル動作中');
+        return;
+      }
+
+      if (!peer) {
+        updateSyncStatusUI('offline', 'ローカル動作中');
+        return;
+      }
+
+      peer.on('open', (id) => {
+        window.state.isHost = true;
+        updateSyncStatusUI('online', 'ホスト (接続待ち)');
+        setupHostHandlers();
+      });
+
+      peer.on('error', (err) => {
+        if (err && err.type === 'unavailable-id') {
+          // すでにホストが存在しているため、自分はクライアントとして接続する
+          try {
+            if (peer && !peer.destroyed) peer.destroy();
+          } catch(ex){}
+          peer = null;
+          setupClientPeer(hostPeerId);
+        } else {
+          console.warn('Peer host error:', err);
+          updateSyncStatusUI('offline', 'オフライン (ローカル動作)');
+        }
+      });
+    }
+
+    function setupHostHandlers() {
+      if (!peer) return;
+      peer.on('connection', (conn) => {
+        connections.push(conn);
+        connectedPeersCount++;
+        updatePeerCountUI();
+
+        conn.on('open', () => {
+          // 新規クライアントに最新の全データを即時送る
+          conn.send({
+            type: 'INIT_SYNC',
+            members: window.state.members,
+            items: window.state.items,
+            updatedAt: window.state.lastLocalUpdate
+          });
+          updateSyncStatusUI('online', `同期中 (${connectedPeersCount}台接続)`);
+          showToast('仲間の端末が接続されました！', '🤝');
+        });
+
+        conn.on('data', (data) => {
+          handleIncomingData(data, conn);
+        });
+
+        conn.on('close', () => {
+          connections = connections.filter(c => c !== conn);
+          connectedPeersCount = Math.max(0, connectedPeersCount - 1);
+          updatePeerCountUI();
+          updateSyncStatusUI('online', connectedPeersCount > 0 ? `同期中 (${connectedPeersCount}台接続)` : 'ホスト (接続待ち)');
+        });
+      });
+    }
+
+    function setupClientPeer(hostPeerId) {
+      if (typeof Peer === 'undefined') return;
+
+      window.state.isHost = false;
+      const cleanRoomId = (window.state.roomId || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
+      const clientPeerId = `djcart-${cleanRoomId}-guest-${Math.random().toString(36).substring(2, 7)}`;
+
+      try {
+        peer = new Peer(clientPeerId, { debug: 0 });
+      } catch (e) {
+        console.warn('Failed to construct client Peer:', e);
+        peer = null;
+        updateSyncStatusUI('offline', 'オフライン');
+        return;
+      }
+
+      if (!peer) return;
+
+      peer.on('open', () => {
+        updateSyncStatusUI('connecting', 'ホストに接続試行中...');
+        try {
+          const conn = peer.connect(hostPeerId, { reliable: true });
+
+          conn.on('open', () => {
+            connections = [conn];
+            connectedPeersCount = 1;
+            updatePeerCountUI();
+            updateSyncStatusUI('online', 'リアルタイム同期中 (接続済)');
+            showToast('ホストと同期接続が完了しました！', '✨');
+          });
+
+          conn.on('data', (data) => {
+            handleIncomingData(data, conn);
+          });
+
+          conn.on('close', () => {
+            connections = [];
+            connectedPeersCount = 0;
+            updatePeerCountUI();
+            updateSyncStatusUI('offline', 'ホスト切断 (ローカル動作)');
+          });
+
+          conn.on('error', () => {
+            updateSyncStatusUI('offline', '接続失敗');
+          });
+        } catch(e) {
+          console.warn('Connect error:', e);
+          updateSyncStatusUI('offline', '接続エラー');
+        }
+      });
+
+      peer.on('error', (err) => {
+        console.warn('Guest peer error:', err);
+        updateSyncStatusUI('offline', 'オフライン (ローカル保存中)');
+      });
+    }
+
+    function broadcastSyncData() {
+      const payload = {
+        type: 'UPDATE',
+        members: window.state.members,
+        items: window.state.items,
+        updatedAt: window.state.lastLocalUpdate
+      };
+
+      connections.forEach(conn => {
+        if (conn && conn.open) {
+          try {
+            conn.send(payload);
+          } catch (e) {
+            console.error('Send error:', e);
+          }
+        }
+      });
+    }
+
+    function handleIncomingData(data, fromConn) {
+      if (data && (data.type === 'UPDATE' || data.type === 'INIT_SYNC')) {
+        if (data.updatedAt && data.updatedAt > window.state.lastLocalUpdate) {
+          window.state.lastLocalUpdate = data.updatedAt;
+          if (Array.isArray(data.members)) window.state.members = data.members;
+          if (Array.isArray(data.items)) window.state.items = data.items;
+
+          saveStorage(false);
+
+          updateMemberBadges();
+          if (window.state.currentView === 'sheet') renderSheet();
+          if (window.state.currentView === 'circle') renderCircleSummary();
+          if (window.state.currentView === 'settle') renderSettlementDashboard();
+
+          // ホストの場合、他の全クライアントにも中継
+          if (window.state.isHost) {
+            connections.forEach(c => {
+              if (c !== fromConn && c.open) {
+                c.send(data);
+              }
+            });
+          }
+        }
+      }
+    }
+
+    function updateSyncStatusUI(status, label) {
+      const text = document.getElementById('sync-status-text');
+      const ping = document.getElementById('sync-ping');
+      const dot = document.getElementById('sync-dot-badge');
+      const bottomLabel = document.getElementById('sync-bottom-label');
+      const bottomDot = document.getElementById('sync-dot-bottom');
+
+      if (text) text.textContent = label;
+      if (bottomLabel) bottomLabel.textContent = label;
+
+      if (status === 'online') {
+        if (ping) ping.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75";
+        if (dot) dot.className = "relative inline-flex rounded-full h-2 w-2 bg-emerald-500";
+        if (bottomDot) bottomDot.className = "inline-block w-2 h-2 rounded-full bg-emerald-500";
+      } else if (status === 'connecting') {
+        if (ping) ping.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75";
+        if (dot) dot.className = "relative inline-flex rounded-full h-2 w-2 bg-amber-500";
+        if (bottomDot) bottomDot.className = "inline-block w-2 h-2 rounded-full bg-amber-500";
+      } else {
+        if (ping) ping.className = "hidden";
+        if (dot) dot.className = "relative inline-flex rounded-full h-2 w-2 bg-rose-500";
+        if (bottomDot) bottomDot.className = "inline-block w-2 h-2 rounded-full bg-rose-500";
+      }
+    }
+
+    function updatePeerCountUI() {
+      const el = document.getElementById('modal-peer-count');
+      if (el) el.textContent = `${connectedPeersCount} 台`;
+    }
+
+    let toastTimer = null;
+    function showToast(msg, icon = '✓') {
+      const el = document.getElementById('toast');
+      document.getElementById('toast-msg').textContent = msg;
+      document.getElementById('toast-icon').textContent = icon;
+      el.classList.remove('opacity-0');
+      el.classList.add('opacity-100');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.classList.remove('opacity-100');
+        el.classList.add('opacity-0');
+      }, 2200);
+    }
+
+    function switchView(viewName) {
+      window.state.currentView = viewName;
+      const vSheet = document.getElementById('view-sheet');
+      const vCircle = document.getElementById('view-circle');
+      const vSettle = document.getElementById('view-settle');
+      const sToolbar = document.getElementById('sheet-toolbar');
+      
+      const bSheet = document.getElementById('nav-btn-sheet');
+      const bCircle = document.getElementById('nav-btn-circle');
+      const bSettle = document.getElementById('nav-btn-settle');
+
+      vSheet.classList.toggle('hidden', viewName !== 'sheet');
+      vCircle.classList.toggle('hidden', viewName !== 'circle');
+      vSettle.classList.toggle('hidden', viewName !== 'settle');
+      sToolbar.classList.toggle('hidden', viewName !== 'sheet');
+
+      const activeCls = 'px-3 py-1 rounded-md bg-white text-indigo-600 shadow-xs transition font-bold';
+      const inactiveCls = 'px-3 py-1 rounded-md text-slate-600 hover:text-indigo-600 transition font-semibold';
+
+      bSheet.className = viewName === 'sheet' ? activeCls : inactiveCls;
+      bCircle.className = viewName === 'circle' ? activeCls : inactiveCls;
+      bSettle.className = viewName === 'settle' ? activeCls : inactiveCls;
+
+      if (viewName === 'sheet') renderSheet();
+      if (viewName === 'circle') renderCircleSummary();
+      if (viewName === 'settle') renderSettlementDashboard();
+    }
+
+    function renderSheet() {
+      const tbody = document.getElementById('sheet-tbody');
+      const filterStatus = document.getElementById('filter-status').value;
+      const filterBuyer = document.getElementById('filter-buyer').value;
+
+      let list = window.state.items.filter(item => {
+        if (filterStatus !== 'ALL' && item.status !== filterStatus) return false;
+        if (filterBuyer === '__NONE__') {
+          if (item.buyer) return false;
+        } else if (filterBuyer !== 'ALL' && item.buyer !== filterBuyer) {
+          return false;
+        }
+        if (window.state.searchQuery) {
+          const q = window.state.searchQuery.toLowerCase();
+          const matchSpace = (item.space || '').toLowerCase().includes(q);
+          const matchCircle = (item.circle || '').toLowerCase().includes(q);
+          const matchTitle = (item.title || '').toLowerCase().includes(q);
+          const matchMemo = (item.memo || '').toLowerCase().includes(q);
+          if (!matchSpace && !matchCircle && !matchTitle && !matchMemo) return false;
+        }
+        return true;
+      });
+
+      if (window.state.sortKey) {
+        list.sort((a, b) => {
+          let valA = a[window.state.sortKey];
+          let valB = b[window.state.sortKey];
+          const countA = Array.isArray(a.wanted) ? a.wanted.length : 0;
+          const countB = Array.isArray(b.wanted) ? b.wanted.length : 0;
+
+          if (window.state.sortKey === 'count') {
+            valA = countA;
+            valB = countB;
+          } else if (window.state.sortKey === 'subtotal') {
+            valA = (Number(a.price) || 0) * countA;
+            valB = (Number(b.price) || 0) * countB;
+          } else if (window.state.sortKey === 'price') {
+            valA = Number(valA) || 0;
+            valB = Number(valB) || 0;
+          } else {
+            valA = (valA || '').toString().toLowerCase();
+            valB = (valB || '').toString().toLowerCase();
+          }
+          if (valA < valB) return window.state.sortAsc ? -1 : 1;
+          if (valA > valB) return window.state.sortAsc ? 1 : -1;
+          return 0;
+        });
+      }
+
+      updateStats();
+
+      if (list.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="15" class="p-8 text-center text-slate-400 bg-slate-50">
+              該当するアイテムがありません。「＋ 1行追加」から登録してください。
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      const statusClasses = {
+        pending: 'bg-white',
+        done: 'bg-emerald-50/40',
+        soldout: 'bg-rose-50/40 text-rose-900',
+        skip: 'bg-slate-100/70 text-slate-400'
+      };
+
+      const statusBadgeColors = {
+        pending: 'bg-slate-100 text-slate-600 border-slate-200',
+        done: 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold',
+        soldout: 'bg-rose-100 text-rose-800 border-rose-300 font-bold',
+        skip: 'bg-slate-200 text-slate-500 border-slate-300'
+      };
+
+      tbody.innerHTML = list.map((item, index) => {
+        const isChecked = window.state.selectedIds.has(item.id);
+        const rowBg = statusClasses[item.status] || 'bg-white';
+        const wantedList = Array.isArray(item.wanted) ? item.wanted : [];
+        const count = wantedList.length; // ほしい人のチェック数＝個数
+        const subtotal = (Number(item.price) || 0) * count;
+
+        return `
+          <tr class="${rowBg} ${isChecked ? '!bg-indigo-50/60' : ''}" data-id="${item.id}">
+            <!-- 選択 -->
+            <td class="p-1 text-center sticky-col-1 ${isChecked ? '!bg-indigo-50/60' : ''}">
+              <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleSelectRow('${item.id}', this.checked)" class="rounded text-indigo-600 cursor-pointer">
+            </td>
+            <!-- No. -->
+            <td class="p-1 text-center font-mono-num text-[11px] text-slate-400 sticky-col-2 ${isChecked ? '!bg-indigo-50/60' : ''}">
+              ${index + 1}
+            </td>
+            <!-- 画像サムネイル -->
+            <td class="p-1 text-center">
+              ${item.image ? `
+                <div class="relative group inline-block cursor-pointer" onclick="openImagePreview('${item.id}')">
+                  <img src="${item.image}" alt="品物" class="w-8 h-8 object-cover rounded border border-slate-200 shadow-2xs hover:scale-105 transition">
+                </div>
+              ` : `
+                <button onclick="triggerUploadImage('${item.id}')" title="画像添付・スクショ貼り付け" class="w-8 h-8 rounded border border-dashed border-slate-300 text-slate-400 hover:text-indigo-600 hover:border-indigo-400 flex items-center justify-center text-xs transition">
+                  📷
+                </button>
+              `}
+            </td>
+            <!-- 配置 -->
+            <td class="p-0.5">
+              <input type="text" value="${escapeHtml(item.space)}" placeholder="東A01a" onchange="updateItemField('${item.id}', 'space', this.value)" class="cell-input font-bold text-indigo-700">
+            </td>
+            <!-- サークル名 -->
+            <td class="p-0.5">
+              <input type="text" value="${escapeHtml(item.circle)}" placeholder="サークル名" onchange="updateItemField('${item.id}', 'circle', this.value)" class="cell-input font-semibold text-slate-800">
+            </td>
+            <!-- 品名 -->
+            <td class="p-0.5">
+              <input type="text" value="${escapeHtml(item.title)}" placeholder="品名・新刊等" onchange="updateItemField('${item.id}', 'title', this.value)" class="cell-input text-slate-900">
+            </td>
+            <!-- 単価 -->
+            <td class="p-0.5">
+              <input type="number" step="50" min="0" value="${item.price || 0}" onchange="updateItemField('${item.id}', 'price', Number(this.value))" class="cell-input text-right font-mono-num font-semibold text-slate-800">
+            </td>
+            <!-- ほしい人 (希望者チェックボックス: チェック数と個数が連動) -->
+            <td class="p-1 bg-indigo-50/20">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                ${window.state.members.map(m => {
+                  const isWanted = wantedList.includes(m);
+                  return `
+                    <label class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] cursor-pointer border select-none transition ${isWanted ? 'bg-indigo-600 border-indigo-700 text-white font-bold shadow-2xs' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}">
+                      <input type="checkbox" ${isWanted ? 'checked' : ''} onchange="toggleWantedMember('${item.id}', '${escapeHtml(m)}', this.checked)" class="w-3 h-3 rounded text-indigo-600 accent-indigo-600">
+                      <span>${escapeHtml(m)}</span>
+                    </label>
+                  `;
+                }).join('')}
+                <button onclick="toggleWantedAll('${item.id}')" title="全員チェック / 解除" class="text-[9px] text-slate-500 hover:text-indigo-600 px-1 py-0.5 rounded border border-slate-200 bg-white">
+                  全
+                </button>
+              </div>
+            </td>
+            <!-- 個数 (ほしい人のチェック数と完全連動) -->
+            <td class="p-1 text-center font-mono-num font-bold">
+              ${count > 0 ? `
+                <span class="inline-block px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded-full text-xs font-bold">${count}</span>
+              ` : `
+                <span class="inline-block px-1.5 py-0.5 bg-rose-50 text-rose-500 border border-rose-200 rounded text-[10px] font-semibold">0 (未選択)</span>
+              `}
+            </td>
+            <!-- 小計 (単価 × ほしい人の数) -->
+            <td class="p-1 text-right font-mono-num font-bold ${count === 0 ? 'text-slate-400' : 'text-slate-800'} bg-slate-50/50">
+              ¥${subtotal.toLocaleString()}
+            </td>
+            <!-- 買い手 (空欄スタート ＆ チェック式トグルボタン) -->
+            <td class="p-1 bg-emerald-50/20">
+              <div class="flex items-center gap-1 flex-wrap">
+                ${window.state.members.map(m => {
+                  const isBuyer = item.buyer === m;
+                  return `
+                    <button type="button" onclick="setBuyerMember('${item.id}', '${escapeHtml(m)}')" class="px-2 py-0.5 rounded text-[10px] font-bold border transition ${isBuyer ? 'bg-emerald-600 border-emerald-700 text-white shadow-xs' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:bg-emerald-50'}">
+                      ${isBuyer ? '✓ ' : ''}${escapeHtml(m)}
+                    </button>
+                  `;
+                }).join('')}
+                ${item.buyer ? `
+                  <button type="button" onclick="setBuyerMember('${item.id}', '')" title="未定に戻す" class="text-[9px] text-slate-400 hover:text-rose-600 px-1 py-0.5 rounded border border-slate-200 bg-white">
+                    クリア
+                  </button>
+                ` : `
+                  <span class="text-[10px] text-amber-600 font-semibold bg-amber-50 px-1 py-0.5 rounded border border-amber-200">未定</span>
+                `}
+              </div>
+            </td>
+            <!-- 状態 -->
+            <td class="p-0.5 text-center">
+              <select onchange="updateItemField('${item.id}', 'status', this.value)" class="cell-select text-center border ${statusBadgeColors[item.status]}">
+                <option value="pending" ${item.status === 'pending' ? 'selected' : ''}>⏳ 未購入</option>
+                <option value="done" ${item.status === 'done' ? 'selected' : ''}>✅ 確保済</option>
+                <option value="soldout" ${item.status === 'soldout' ? 'selected' : ''}>❌ 完売</option>
+                <option value="skip" ${item.status === 'skip' ? 'selected' : ''}>⏭ 見送り</option>
+              </select>
+            </td>
+            <!-- 優先度 -->
+            <td class="p-0.5 text-center">
+              <select onchange="updateItemField('${item.id}', 'priority', this.value)" class="cell-select text-center border text-[10px]">
+                <option value="high" ${item.priority === 'high' ? 'selected' : ''}>🔴 高</option>
+                <option value="mid" ${item.priority === 'mid' ? 'selected' : ''}>🟡 中</option>
+                <option value="low" ${item.priority === 'low' ? 'selected' : ''}>⚪ 低</option>
+              </select>
+            </td>
+            <!-- メモ -->
+            <td class="p-0.5">
+              <input type="text" value="${escapeHtml(item.memo || '')}" placeholder="限数1、ノベルティ等" onchange="updateItemField('${item.id}', 'memo', this.value)" class="cell-input text-slate-500">
+            </td>
+            <!-- 削除ボタン -->
+            <td class="p-0.5 text-center">
+              <button onclick="deleteSingleRow('${item.id}')" title="削除" class="text-slate-400 hover:text-rose-600 p-1 rounded transition text-xs">
+                ✕
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      updateBatchButtonState();
+    }
+
+    function setBuyerMember(itemId, memberName) {
+      const item = window.state.items.find(i => i.id === itemId);
+      if (!item) return;
+
+      if (item.buyer === memberName) {
+        item.buyer = '';
+      } else {
+        item.buyer = memberName;
+        // 買い手決定時に未購入であれば「確保済」に自動更新
+        if (memberName && item.status === 'pending') {
+          item.status = 'done';
+          showToast(`${memberName}さんが購入！「確保済」に更新しました`, '✅');
+        }
+      }
+      saveStorage();
+      renderSheet();
+    }
+
+    function toggleWantedMember(itemId, memberName, isChecked) {
+      const item = window.state.items.find(i => i.id === itemId);
+      if (!item) return;
+      if (!Array.isArray(item.wanted)) item.wanted = [];
+
+      if (isChecked) {
+        if (!item.wanted.includes(memberName)) item.wanted.push(memberName);
+      } else {
+        item.wanted = item.wanted.filter(m => m !== memberName);
+      }
+      saveStorage();
+      renderSheet();
+    }
+
+    function toggleWantedAll(itemId) {
+      const item = window.state.items.find(i => i.id === itemId);
+      if (!item) return;
+      if (!Array.isArray(item.wanted)) item.wanted = [];
+
+      if (item.wanted.length === window.state.members.length) {
+        item.wanted = [];
+      } else {
+        item.wanted = [...window.state.members];
+      }
+      saveStorage();
+      renderSheet();
+    }
+
+    function updateItemField(id, field, value) {
+      const item = window.state.items.find(i => i.id === id);
+      if (!item) return;
+      item[field] = value;
+      saveStorage();
+      if (['status', 'price', 'priority', 'buyer'].includes(field)) {
+        renderSheet();
+      }
+    }
+
+    function addNewRow(count = 1) {
+      const defaultWanted = window.state.members[0] ? [window.state.members[0]] : [];
+      for (let i = 0; i < count; i++) {
+        window.state.items.push({
+          id: Date.now().toString() + '_' + Math.random().toString(36).substring(2, 6),
+          space: '',
+          circle: '',
+          title: '',
+          price: 0,
+          buyer: '',
+          wanted: [...defaultWanted],
+          status: 'pending',
+          priority: 'mid',
+          memo: '',
+          image: ''
+        });
+      }
+      saveStorage();
+      renderSheet();
+
+      setTimeout(() => {
+        const scrollBox = document.getElementById('table-scroll-container');
+        if (scrollBox) scrollBox.scrollTop = scrollBox.scrollHeight;
+      }, 50);
+      showToast(`${count}行 追加しました`);
+    }
+
+    function deleteSingleRow(id) {
+      window.state.items = window.state.items.filter(i => i.id !== id);
+      window.state.selectedIds.delete(id);
+      saveStorage();
+      renderSheet();
+    }
+
+    function toggleSelectRow(id, isChecked) {
+      if (isChecked) {
+        window.state.selectedIds.add(id);
+      } else {
+        window.state.selectedIds.delete(id);
+      }
+      updateBatchButtonState();
+      const tr = document.querySelector(`tr[data-id="${id}"]`);
+      if (tr) tr.classList.toggle('!bg-indigo-50/60', isChecked);
+    }
+
+    function toggleSelectAll(isChecked) {
+      if (isChecked) {
+        window.state.items.forEach(i => window.state.selectedIds.add(i.id));
+      } else {
+        window.state.selectedIds.clear();
+      }
+      renderSheet();
+    }
+
+    function updateBatchButtonState() {
+      const count = window.state.selectedIds.size;
+      document.getElementById('selected-count').textContent = count;
+      document.getElementById('btn-batch-delete').disabled = count === 0;
+      document.getElementById('btn-batch-done').disabled = count === 0;
+      const checkAll = document.getElementById('check-all');
+      if (checkAll) {
+        checkAll.checked = count > 0 && count === window.state.items.length;
+      }
+    }
+
+    function deleteSelectedRows() {
+      if (window.state.selectedIds.size === 0) return;
+      window.state.items = window.state.items.filter(i => !window.state.selectedIds.has(i.id));
+      window.state.selectedIds.clear();
+      saveStorage();
+      renderSheet();
+      showToast('選択した行を削除しました');
+    }
+
+    function markSelectedDone() {
+      if (window.state.selectedIds.size === 0) return;
+      window.state.items.forEach(i => {
+        if (window.state.selectedIds.has(i.id)) {
+          i.status = 'done';
+        }
+      });
+      saveStorage();
+      renderSheet();
+      showToast('選択した行を「確保済」に更新しました');
+    }
+
+    function handleSearch(val) {
+      window.state.searchQuery = val.trim();
+      renderSheet();
+    }
+
+    function sortBy(key) {
+      if (window.state.sortKey === key) {
+        window.state.sortAsc = !window.state.sortAsc;
+      } else {
+        window.state.sortKey = key;
+        window.state.sortAsc = true;
+      }
+      ['space', 'circle', 'count', 'subtotal', 'status', 'priority'].forEach(k => {
+        const icon = document.getElementById(`sort-${k}`);
+        if (icon) {
+          if (window.state.sortKey === k) {
+            icon.textContent = window.state.sortAsc ? '▲' : '▼';
+            icon.className = 'text-[10px] text-indigo-600 font-bold';
+          } else {
+            icon.textContent = '↕';
+            icon.className = 'text-[10px] text-slate-400';
+          }
+        }
+      });
+      renderSheet();
+    }
+
+    function updateStats() {
+      const totalCount = window.state.items.length;
+      const doneItems = window.state.items.filter(i => i.status === 'done');
+      const soldoutItems = window.state.items.filter(i => i.status === 'soldout');
+      
+      let totalItemCount = 0;
+      let budgetTotal = 0;
+      let actualTotal = 0;
+
+      window.state.items.forEach(i => {
+        const cnt = Array.isArray(i.wanted) ? i.wanted.length : 0;
+        totalItemCount += cnt;
+        const sub = (Number(i.price) || 0) * cnt;
+        budgetTotal += sub;
+        if (i.status === 'done') {
+          actualTotal += sub;
+        }
+      });
+
+      document.getElementById('stat-row-count').textContent = totalCount;
+      document.getElementById('stat-done-count').textContent = doneItems.length;
+      document.getElementById('stat-soldout-count').textContent = soldoutItems.length;
+      document.getElementById('stat-items-count').textContent = totalItemCount;
+      document.getElementById('stat-budget-total').textContent = `¥${budgetTotal.toLocaleString()}`;
+      document.getElementById('stat-actual-total').textContent = `¥${actualTotal.toLocaleString()}`;
+      document.getElementById('settle-badge-count').textContent = doneItems.length;
+    }
+
+    let activeUploadItemId = null;
+    function triggerUploadImage(itemId) {
+      activeUploadItemId = itemId;
+      const fileInput = document.getElementById('cell-file-input');
+      fileInput.click();
+    }
+
+    document.getElementById('cell-file-input').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file || !activeUploadItemId) return;
+      compressAndSaveImage(file, activeUploadItemId);
+      e.target.value = '';
+    });
+
+    function handleGlobalPaste(e) {
+      const clipboardItems = (e.clipboardData || e.originalEvent.clipboardData).items;
+      for (let item of clipboardItems) {
+        if (item.type.indexOf('image') !== -1) {
+          const blob = item.getAsFile();
+          const targetId = window.state.selectedIds.size > 0 
+            ? Array.from(window.state.selectedIds)[0] 
+            : (window.state.items[window.state.items.length - 1]?.id);
+          
+          if (targetId) {
+            compressAndSaveImage(blob, targetId);
+            showToast('クリップボードの画像を添付しました！');
+          }
+          break;
+        }
+      }
+    }
+
+    function compressAndSaveImage(file, itemId) {
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        const img = new Image();
+        img.onload = function() {
+          const canvas = document.createElement('canvas');
+          const maxDim = 800;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+          const item = window.state.items.find(i => i.id === itemId);
+          if (item) {
+            item.image = compressedBase64;
+            saveStorage();
+            renderSheet();
+          }
+        };
+        img.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    let viewingItemId = null;
+    function openImagePreview(itemId) {
+      viewingItemId = itemId;
+      const item = window.state.items.find(i => i.id === itemId);
+      if (!item || !item.image) return;
+
+      document.getElementById('image-modal-title').textContent = `${item.space} ${item.circle} - ${item.title}`;
+      document.getElementById('image-modal-img').src = item.image;
+      
+      const btnRemove = document.getElementById('btn-remove-image');
+      btnRemove.onclick = () => {
+        item.image = '';
+        saveStorage();
+        closeImagePreview();
+        renderSheet();
+        showToast('画像を削除しました');
+      };
+
+      document.getElementById('modal-image-preview').classList.remove('hidden');
+      document.getElementById('modal-image-preview').classList.add('flex');
+    }
+
+    function closeImagePreview() {
+      document.getElementById('modal-image-preview').classList.add('hidden');
+      document.getElementById('modal-image-preview').classList.remove('flex');
+      viewingItemId = null;
+    }
+
+    function renderCircleSummary() {
+      const tbody = document.getElementById('circle-summary-tbody');
+      
+      const groupMap = new Map();
+      window.state.items.forEach(item => {
+        const key = `${item.space || '未定'}__${item.circle || '名称未設定'}`;
+        if (!groupMap.has(key)) {
+          groupMap.set(key, {
+            space: item.space || '未定',
+            circle: item.circle || '名称未設定',
+            itemsCount: 0,
+            plannedTotal: 0,
+            doneTotal: 0,
+            statuses: { pending: 0, done: 0, soldout: 0, skip: 0 }
+          });
+        }
+        const g = groupMap.get(key);
+        const cnt = Array.isArray(item.wanted) ? item.wanted.length : 0;
+        const subtotal = (Number(item.price) || 0) * cnt;
+        g.itemsCount += cnt;
+        g.plannedTotal += subtotal;
+        if (item.status === 'done') g.doneTotal += subtotal;
+        g.statuses[item.status] = (g.statuses[item.status] || 0) + 1;
+      });
+
+      const list = Array.from(groupMap.values());
+      if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-slate-400">データがありません</td></tr>`;
+        return;
+      }
+
+      list.sort((a, b) => a.space.localeCompare(b.space));
+
+      tbody.innerHTML = list.map(g => `
+        <tr class="hover:bg-slate-50">
+          <td class="p-3 font-bold text-indigo-700">${escapeHtml(g.space)}</td>
+          <td class="p-3 font-bold text-slate-800">${escapeHtml(g.circle)}</td>
+          <td class="p-3 text-center font-mono-num font-bold text-slate-700">${g.itemsCount} 点</td>
+          <td class="p-3 text-right font-mono-num font-bold text-slate-700">¥${g.plannedTotal.toLocaleString()}</td>
+          <td class="p-3 text-right font-mono-num font-extrabold ${g.doneTotal > 0 ? 'text-emerald-600' : 'text-slate-400'}">
+            ¥${g.doneTotal.toLocaleString()}
+          </td>
+          <td class="p-3 text-center">
+            <span class="inline-flex gap-1 text-[10px]">
+              ${g.statuses.done ? `<span class="bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-bold">済 ${g.statuses.done}</span>` : ''}
+              ${g.statuses.pending ? `<span class="bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">未 ${g.statuses.pending}</span>` : ''}
+              ${g.statuses.soldout ? `<span class="bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded">完 ${g.statuses.soldout}</span>` : ''}
+            </span>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function calculateSettlement() {
+      const doneItems = window.state.items.filter(i => i.status === 'done');
+      let totalPaid = 0;
+
+      const paidBy = {};
+      const shouldPayBy = {};
+      window.state.members.forEach(m => {
+        paidBy[m] = 0;
+        shouldPayBy[m] = 0;
+      });
+
+      doneItems.forEach(item => {
+        const wanted = Array.isArray(item.wanted) ? item.wanted : [];
+        const count = wanted.length;
+        const itemTotal = (Number(item.price) || 0) * count;
+        if (itemTotal <= 0) return;
+
+        totalPaid += itemTotal;
+
+        // 立替人 (buyerが設定されている場合)
+        if (item.buyer && paidBy[item.buyer] !== undefined) {
+          paidBy[item.buyer] += itemTotal;
+        }
+
+        // ほしい人（チェックした各人が単価分を自己負担）
+        const singlePrice = Number(item.price) || 0;
+        wanted.forEach(m => {
+          if (shouldPayBy[m] !== undefined) {
+            shouldPayBy[m] += singlePrice;
+          }
+        });
+      });
+
+      const netBalances = {};
+      window.state.members.forEach(m => {
+        netBalances[m] = Math.round((paidBy[m] || 0) - (shouldPayBy[m] || 0));
+      });
+
+      let debtors = [];
+      let creditors = [];
+
+      Object.keys(netBalances).forEach(m => {
+        const val = netBalances[m];
+        if (val < -1) {
+          debtors.push({ name: m, amount: -val });
+        } else if (val > 1) {
+          creditors.push({ name: m, amount: val });
+        }
+      });
+
+      debtors.sort((a, b) => b.amount - a.amount);
+      creditors.sort((a, b) => b.amount - a.amount);
+
+      const transfers = [];
+      let dIdx = 0;
+      let cIdx = 0;
+
+      while (dIdx < debtors.length && cIdx < creditors.length) {
+        const d = debtors[dIdx];
+        const c = creditors[cIdx];
+        const transferAmount = Math.min(d.amount, c.amount);
+
+        if (transferAmount > 0) {
+          transfers.push({
+            from: d.name,
+            to: c.name,
+            amount: Math.round(transferAmount)
+          });
+        }
+
+        d.amount -= transferAmount;
+        c.amount -= transferAmount;
+
+        if (d.amount <= 1) dIdx++;
+        if (c.amount <= 1) cIdx++;
+      }
+
+      return {
+        doneCount: doneItems.length,
+        totalPaid,
+        paidBy,
+        shouldPayBy,
+        netBalances,
+        transfers
+      };
+    }
+
+    function renderSettlementDashboard() {
+      const calc = calculateSettlement();
+
+      document.getElementById('dash-total-paid').textContent = `¥${calc.totalPaid.toLocaleString()}`;
+      document.getElementById('dash-done-items-count').textContent = `${calc.doneCount} 件`;
+      document.getElementById('dash-transfer-count').textContent = `${calc.transfers.length} 回`;
+
+      const pendingTotal = calc.transfers.reduce((sum, t) => sum + t.amount, 0);
+      document.getElementById('dash-pending-settle').textContent = `¥${pendingTotal.toLocaleString()}`;
+
+      const routesContainer = document.getElementById('transfer-routes-container');
+      if (calc.transfers.length === 0) {
+        routesContainer.innerHTML = `
+          <div class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-center text-xs text-emerald-800 font-bold">
+            🎉 全員の立替・負担差額が¥0です！追加の送金・精算は必要ありません。
+          </div>
+        `;
+      } else {
+        routesContainer.innerHTML = calc.transfers.map(tr => `
+          <div class="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl hover:border-indigo-300 transition">
+            <div class="flex items-center gap-2 text-xs font-bold text-slate-800">
+              <span class="bg-rose-100 text-rose-800 px-2 py-0.5 rounded border border-rose-200">払う人: ${escapeHtml(tr.from)}</span>
+              <span class="text-slate-400 font-bold">➔</span>
+              <span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">受取人: ${escapeHtml(tr.to)}</span>
+            </div>
+            <div class="text-sm font-extrabold font-mono-num text-indigo-600">
+              ¥${tr.amount.toLocaleString()}
+            </div>
+          </div>
+        `).join('');
+      }
+
+      const balanceTbody = document.getElementById('settle-balance-tbody');
+      balanceTbody.innerHTML = window.state.members.map(m => {
+        const paid = Math.round(calc.paidBy[m] || 0);
+        const should = Math.round(calc.shouldPayBy[m] || 0);
+        const net = calc.netBalances[m] || 0;
+
+        let badge = '';
+        if (net > 0) {
+          badge = `<span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full text-[11px] font-bold">+¥${net.toLocaleString()} 受取</span>`;
+        } else if (net < 0) {
+          badge = `<span class="bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full text-[11px] font-bold">-¥${Math.abs(net).toLocaleString()} 支払</span>`;
+        } else {
+          badge = `<span class="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[11px] font-medium">±¥0 精算済</span>`;
+        }
+
+        return `
+          <tr class="hover:bg-slate-50">
+            <td class="p-2.5 font-bold text-slate-800">👤 ${escapeHtml(m)}</td>
+            <td class="p-2.5 text-right font-mono-num">¥${paid.toLocaleString()}</td>
+            <td class="p-2.5 text-right font-mono-num">¥${should.toLocaleString()}</td>
+            <td class="p-2.5 text-right font-mono-num font-bold ${net > 0 ? 'text-emerald-600' : net < 0 ? 'text-rose-600' : 'text-slate-500'}">
+              ${net > 0 ? '+' : ''}¥${net.toLocaleString()}
+            </td>
+            <td class="p-2.5 text-center">${badge}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function copySettlementMessage() {
+      const calc = calculateSettlement();
+      let text = `【同人イベント共同精算結果】\n`;
+      text += `■ 確保済購入総額: ¥${calc.totalPaid.toLocaleString()} (${calc.doneCount}件)\n\n`;
+
+      text += `■ 送金指示 (最短ルート):\n`;
+      if (calc.transfers.length === 0) {
+        text += `・全員相殺完了 (差額なし)\n`;
+      } else {
+        calc.transfers.forEach(tr => {
+          text += `・${tr.from} ➔ ${tr.to} に ¥${tr.amount.toLocaleString()} 送金\n`;
+        });
+      }
+
+      text += `\n■ 各自の明細:\n`;
+      window.state.members.forEach(m => {
+        const paid = Math.round(calc.paidBy[m] || 0);
+        const should = Math.round(calc.shouldPayBy[m] || 0);
+        const net = calc.netBalances[m] || 0;
+        const statusText = net >= 0 ? `+¥${net.toLocaleString()} (受取)` : `-¥${Math.abs(net).toLocaleString()} (支払)`;
+        text += `・${m}: 差額 ${statusText} [立替済: ¥${paid.toLocaleString()} / 実負担: ¥${should.toLocaleString()}]\n`;
+      });
+
+      copyToClipboard(text, '精算メッセージをクリップボードにコピーしました！LINE等に貼り付けられます。');
+    }
+
+    function downloadCSVTemplate(e) {
+      if (e) e.stopPropagation();
+      const menu = document.getElementById('csv-dropdown-menu');
+      if (menu) menu.classList.add('hidden');
+
+      const headers = ['配置', 'サークル名', '品名', '単価', 'ほしい人(スラッシュ区切り)', '買い手(空欄可)', '優先度(高/中/低)', '状態(pending/done/soldout)', 'メモ'];
+      const sample1 = ['東4 A01a', '極光スタジオ', '新刊イラスト集', '1500', '自分/友人A', '', '高', 'pending', 'ポスター付き'];
+      const sample2 = ['東4 A02b', '星屑書房', '既刊合同誌', '1000', '自分/友人A/友人B', '自分', '中', 'done', '確保済'];
+
+      const csvContent = [headers, sample1, sample2]
+        .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+        .join('\r\n');
+
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `同人買い物リスト_テンプレート.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('CSVテンプレートをダウンロードしました');
+    }
+
+    function exportCSV() {
+      const headers = ['配置', 'サークル名', '品名', '単価', 'ほしい人', '買い手', '優先度', '状態', 'メモ'];
+      const rows = window.state.items.map(i => [
+        i.space || '',
+        i.circle || '',
+        i.title || '',
+        i.price || 0,
+        (Array.isArray(i.wanted) ? i.wanted.join('/') : ''),
+        i.buyer || '',
+        i.priority || 'mid',
+        i.status || 'pending',
+        i.memo || ''
+      ]);
+
+      const csvContent = [headers, ...rows]
+        .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+        .join('\r\n');
+
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `同人買い物リスト_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('CSVファイルを書き出しました');
+    }
+
+    function importCSV(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const text = event.target.result;
+          const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
+          if (lines.length <= 1) return;
+
+          const parseLine = (line) => {
+            const res = [];
+            let cur = '';
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+              const char = line[i];
+              if (char === '"' && line[i + 1] === '"') {
+                cur += '"';
+                i++;
+              } else if (char === '"') {
+                inQuotes = !inQuotes;
+              } else if (char === ',' && !inQuotes) {
+                res.push(cur.trim());
+                cur = '';
+              } else {
+                cur += char;
+              }
+            }
+            res.push(cur.trim());
+            return res;
+          };
+
+          const importedItems = [];
+          for (let i = 1; i < lines.length; i++) {
+            const cols = parseLine(lines[i]);
+            if (cols.length >= 3) {
+              const wantedRaw = cols[4] || '';
+              const wantedArr = wantedRaw ? wantedRaw.split(/[\/,、]/).map(s => s.trim()).filter(Boolean) : [];
+
+              wantedArr.forEach(m => {
+                if (m && !window.state.members.includes(m)) window.state.members.push(m);
+              });
+              if (cols[5] && !window.state.members.includes(cols[5])) {
+                window.state.members.push(cols[5]);
+              }
+
+              importedItems.push({
+                id: Date.now().toString() + '_' + i,
+                space: cols[0] || '',
+                circle: cols[1] || '',
+                title: cols[2] || '',
+                price: Number(cols[3]) || 0,
+                wanted: wantedArr,
+                buyer: cols[5] || '',
+                priority: cols[6] === '高' ? 'high' : cols[6] === '低' ? 'low' : 'mid',
+                status: cols[7] || 'pending',
+                memo: cols[8] || '',
+                image: ''
+              });
+            }
+          }
+
+          if (importedItems.length > 0) {
+            window.state.items = importedItems;
+            saveStorage();
+            updateMemberBadges();
+            renderSheet();
+            showToast(`${importedItems.length}件のアイテムを取り込みました`);
+          }
+        } catch (err) {
+          showToast('CSVの読み込みに失敗しました', '⚠️');
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    }
+
+    function openMembersModal() {
+      renderMembersModalList();
+      document.getElementById('modal-members').classList.remove('hidden');
+      document.getElementById('modal-members').classList.add('flex');
+    }
+
+    function closeMembersModal() {
+      document.getElementById('modal-members').classList.add('hidden');
+      document.getElementById('modal-members').classList.remove('flex');
+    }
+
+    function updateMemberBadges() {
+      document.getElementById('member-count-badge').textContent = window.state.members.length;
+      const flt = document.getElementById('filter-buyer');
+      const curVal = flt.value;
+      flt.innerHTML = `
+        <option value="ALL">全買い手</option>
+        <option value="__NONE__">⚠️ 未定 (未購入)</option>
+        ${window.state.members.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('')}
+      `;
+      flt.value = curVal || 'ALL';
+    }
+
+    function renderMembersModalList() {
+      const list = document.getElementById('members-list-items');
+      list.innerHTML = window.state.members.map(m => `
+        <div class="flex items-center justify-between p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+          <span class="font-bold text-slate-800">👤 ${escapeHtml(m)}</span>
+          ${window.state.members.length > 1 ? `
+            <button onclick="removeMember('${escapeHtml(m)}')" class="text-rose-500 hover:text-rose-700 font-bold px-2 py-0.5">
+              削除
+            </button>
+          ` : '<span class="text-[10px] text-slate-400">最低1人必要</span>'}
+        </div>
+      `).join('');
+    }
+
+    function handleAddMember(e) {
+      e.preventDefault();
+      const input = document.getElementById('input-member-name');
+      const name = input.value.trim();
+      if (!name) return;
+      if (window.state.members.includes(name)) {
+        showToast('既に存在する名前です', '⚠️');
+        return;
+      }
+      window.state.members.push(name);
+      input.value = '';
+      saveStorage();
+      updateMemberBadges();
+      renderMembersModalList();
+      renderSheet();
+      showToast(`メンバー「${name}」を追加しました`);
+    }
+
+    function removeMember(name) {
+      if (window.state.members.length <= 1) return;
+      window.state.members = window.state.members.filter(m => m !== name);
+      window.state.items.forEach(i => {
+        if (i.buyer === name) i.buyer = '';
+        if (Array.isArray(i.wanted)) {
+          i.wanted = i.wanted.filter(w => w !== name);
+        }
+      });
+      saveStorage();
+      updateMemberBadges();
+      renderMembersModalList();
+      renderSheet();
+      showToast(`メンバー「${name}」を削除しました`);
+    }
+
+    function openShareModal() {
+      let shareUrl = '';
+      if (window.location.origin && window.location.origin !== 'null' && !window.location.href.startsWith('blob:')) {
+        shareUrl = `${window.location.origin}${window.location.pathname}#room=${encodeURIComponent(window.state.roomId)}`;
+      } else {
+        shareUrl = `https://あなたのサイトのURL/#room=${encodeURIComponent(window.state.roomId)}`;
+      }
+
+      document.getElementById('share-url-box').textContent = shareUrl;
+      document.getElementById('modal-room-id').textContent = window.state.roomId;
+      document.getElementById('modal-peer-count').textContent = `${connectedPeersCount} 台`;
+      document.getElementById('modal-share').classList.remove('hidden');
+      document.getElementById('modal-share').classList.add('flex');
+    }
+
+    function closeShareModal() {
+      document.getElementById('modal-share').classList.add('hidden');
+      document.getElementById('modal-share').classList.remove('flex');
+    }
+
+    function copyShareLink() {
+      const text = document.getElementById('share-url-box').textContent;
+      copyToClipboard(text, '共有URLをコピーしました！友達に送ると自動でリアルタイム接続されます。');
+      closeShareModal();
+    }
+
+    function resetDataPrompt(e) {
+      const btn = e.target;
+      if (btn.getAttribute('data-confirm') === 'true') {
+        window.state.items = [];
+        saveStorage();
+        updateMemberBadges();
+        renderSheet();
+        showToast('シートデータをリセットしました');
+        btn.removeAttribute('data-confirm');
+        btn.textContent = '🗑 このイベントの品物を空にする';
+      } else {
+        btn.setAttribute('data-confirm', 'true');
+        btn.textContent = '本当にリセット？もう一度クリック';
+        setTimeout(() => {
+          btn.removeAttribute('data-confirm');
+          btn.textContent = '🗑 このイベントの品物を空にする';
+        }, 3500);
+      }
+    }
+
+    function copyToClipboard(str, successMessage) {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast(successMessage);
+      } catch (e) {
+        showToast('コピーに失敗しました', '⚠️');
+      }
+      document.body.removeChild(ta);
+    }
+
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str).replace(/[&<>'"]/g, t => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[t] || t));
+    }
+  </script>
+</body>
+</html>
